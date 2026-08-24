@@ -4,6 +4,10 @@ A simple Windows app for watching videos and recording behavioral observations.
 
 Your videos and observations stay on your computer. The app can save observation data to an Excel file.
 
+## Download the Windows installer
+
+[Download the Windows installer](./windows%20installer/BehaviorLab%20Video%20Coder_1.0.0_x64-setup.exe)
+
 ## Use the Windows app
 
 1. Download and run the Windows installer.
@@ -48,10 +52,10 @@ npm run desktop:dev
 npm run desktop:build
 ```
 
-The installer will be created in:
+The finished installer will be copied to:
 
 ```text
-src-tauri/target/release/bundle/nsis/
+windows installer/
 ```
 
 The portable `.exe` will be created in:
