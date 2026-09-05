@@ -38,9 +38,32 @@ export default function App() {
   const [manageCategories, setManageCategories] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [showDataMenu, setShowDataMenu] = useState(false)
-  const [newestFirst, setNewestFirst] = useState(true)
+  const [newestFirst, setNewestFirst] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
   const saveLock = useRef(false)
+  const reviewRows = observations
+    .filter((item) => !videoFile || item.videoFile === videoFile)
+    .slice()
+    .sort((a, b) => newestFirst ? b.eventId - a.eventId : a.eventId - b.eventId)
+  const editingIndex = editingId ? reviewRows.findIndex((item) => item.id === editingId) : -1
+
+  const beginEditing = useCallback((item: Observation) => {
+    if (videoRef.current && item.videoFile === videoFile) videoRef.current.currentTime = item.timestampSeconds
+    setEditingId(item.id)
+    setReactions(item.reaction.split(', ').filter(Boolean))
+    setGender(item.gender || '')
+    setNotes(item.notes)
+  }, [videoFile])
+
+  const cancelEditing = useCallback(() => {
+    setEditingId(null); setReactions([]); setGender(''); setNotes('')
+  }, [])
+
+  const moveEditing = useCallback((direction: -1 | 1) => {
+    if (editingIndex < 0) return
+    const item = reviewRows[editingIndex + direction]
+    if (item) beginEditing(item)
+  }, [beginEditing, editingIndex, reviewRows])
 
   useEffect(() => { void Promise.all([dbService.getProjects(), dbService.getTemplates()]).then(([savedProjects, savedTemplates]) => { setProjects(savedProjects); setTemplates(savedTemplates) }) }, [])
   useEffect(() => () => { if (videoUrl.startsWith('blob:')) URL.revokeObjectURL(videoUrl) }, [videoUrl])
@@ -101,17 +124,34 @@ export default function App() {
     setTemplates((current) => current.filter((item) => item.id !== template.id))
   }
 
-  const importExcel = async (file: File) => {
+  const importExcel = async (file: File, target?: WorkbookTarget) => {
     const imported = await excelService.importFile(file)
     const now = new Date().toISOString()
     const highestEvent = imported.observations.reduce((max, item) => Math.max(max, item.eventId), 0)
     const highestPerson = imported.observations.reduce((max, item) => { const match = /^P(\d+)$/i.exec(item.personId); return match ? Math.max(max, Number(match[1])) : max }, 0)
-    const next: AnalysisProject = { id: crypto.randomUUID(), name: file.name.replace(/\.xlsx$/i, ''), createdAt: now, updatedAt: now, categories: DEFAULT_CATEGORIES.map((item) => ({ ...item, id: crypto.randomUUID() })), nextEventId: highestEvent + 1, nextPersonNumber: highestPerson + 1, workbookName: imported.workbookName }
+    const next: AnalysisProject = { id: crypto.randomUUID(), name: file.name.replace(/\.xlsx$/i, ''), createdAt: now, updatedAt: now, categories: DEFAULT_CATEGORIES.map((item) => ({ ...item, id: crypto.randomUUID() })), nextEventId: highestEvent + 1, nextPersonNumber: highestPerson + 1, workbookName: imported.workbookName, workbookHandle: typeof target === 'string' ? undefined : target, workbookPath: typeof target === 'string' ? target : undefined }
     const rows: Observation[] = imported.observations.map((item) => ({ ...item, id: crypto.randomUUID(), projectId: next.id }))
     await dbService.saveProject(next)
     await dbService.saveObservations(rows)
     setProjects((current) => [...current, next])
-    setProject(next); setObservations(rows); setStatus('sync-needed')
+    setProject(next); setObservations(rows)
+    if (!target) { setStatus('sync-needed'); return }
+    setStatus('saving')
+    try {
+      await excelService.sync(target, rows)
+      setStatus('saved')
+    } catch (error) {
+      setStatus((error as DOMException).name === 'AbortError' ? 'sync-needed' : 'error')
+    }
+  }
+
+  const chooseAndImportExcel = async () => {
+    try {
+      const source = await excelService.chooseWorkbookToImport()
+      if (source) await importExcel(source.file, source.target)
+    } catch (error) {
+      if ((error as DOMException).name !== 'AbortError') throw error
+    }
   }
 
   const deleteProject = async (item: AnalysisProject) => {
@@ -144,6 +184,7 @@ export default function App() {
     saveLock.current = true; setSaving(true); setStatus('saving')
     const timestampSeconds = Number((videoRef.current?.currentTime ?? currentTime).toFixed(3))
     const existing = editingId ? observations.find((item) => item.id === editingId) : undefined
+    const nextReviewItem = existing && editingIndex >= 0 ? reviewRows[editingIndex + 1] : undefined
     const highestPersonId = observations.reduce((max, entry) => {
       const match = /^P(\d+)$/i.exec(entry.personId || '')
       return match ? Math.max(max, Number(match[1])) : max
@@ -168,25 +209,31 @@ export default function App() {
       const next = existing ? observations.map((entry) => entry.id === item.id ? item : entry) : [...observations, item]
       setProject(updatedProject)
       setProjects((items) => items.map((entry) => entry.id === updatedProject.id ? updatedProject : entry))
-      setObservations(next); setReactions([]); setGender(''); setNotes(''); setEditingId(null)
+      setObservations(next)
+      if (nextReviewItem) beginEditing(nextReviewItem)
+      else cancelEditing()
       setToast(existing ? 'Observation updated' : 'Observation saved locally')
       window.setTimeout(() => setToast(''), 2600)
       await syncExcel(next, updatedProject)
     } finally { setSaving(false); window.setTimeout(() => { saveLock.current = false }, 500) }
-  }, [project, reactions, gender, currentTime, editingId, observations, videoFile, notes, syncExcel])
+  }, [project, reactions, gender, currentTime, editingId, observations, videoFile, notes, syncExcel, editingIndex, reviewRows, beginEditing, cancelEditing])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      const saveShortcut = (event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === 's' || event.key === 'Enter')
+      if (saveShortcut) { event.preventDefault(); if (reactions.length && gender) void saveObservation(); return }
+      if (event.key === 'Escape' && editingId) { event.preventDefault(); cancelEditing(); return }
       if (editableTarget(event.target)) return
       if (event.code === 'Space') { event.preventDefault(); const video = videoRef.current; if (video?.src) video.paused ? void video.play() : video.pause() }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (reactions.length && gender) void saveObservation() }
+      if (editingId && event.key === 'ArrowUp') { event.preventDefault(); moveEditing(-1) }
+      if (editingId && event.key === 'ArrowDown') { event.preventDefault(); moveEditing(1) }
       if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const direction = event.key === 'ArrowRight' ? 1 : -1; const video = videoRef.current; if (video) video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + direction * (event.shiftKey ? 5 : 2))) }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [reactions, gender, saveObservation])
+  }, [reactions, gender, saveObservation, editingId, cancelEditing, moveEditing])
 
-  if (!project) return <ProjectManager projects={projects} templates={templates} onNew={createProject} onSaveTemplate={saveTemplate} onDeleteTemplate={deleteTemplate} onOpen={(item) => void openProject(item)} onImport={importExcel} onDelete={(item) => void deleteProject(item)} />
+  if (!project) return <ProjectManager projects={projects} templates={templates} onNew={createProject} onSaveTemplate={saveTemplate} onDeleteTemplate={deleteTemplate} onOpen={(item) => void openProject(item)} connectedImportSupported={excelService.connectedImportSupported} onChooseConnectedImport={chooseAndImportExcel} onImport={importExcel} onDelete={(item) => void deleteProject(item)} />
 
   const visibleRows = observations.filter((item) => !videoFile || item.videoFile === videoFile)
   const lastCoded = visibleRows.slice().sort((a, b) => b.eventId - a.eventId)[0]
@@ -220,12 +267,12 @@ export default function App() {
       <div className="analysis-summary"><div><span>Current analysis</span><strong>{project.name}</strong></div><i /><div><span>Current video</span><strong>{videoFile || 'Not selected'}</strong></div><i /><div><span>Observations</span><strong>{visibleRows.length}</strong></div><i /><div><span>Last coded</span><strong>{lastCoded?.timestamp || '—'}</strong></div></div>
       <div className="header-actions"><StatusIndicator status={status} onRetry={status === 'error' || status === 'sync-needed' ? () => void syncExcel() : undefined} /><button className="icon-button" onClick={() => setShowShortcuts(!showShortcuts)} aria-label="Keyboard shortcuts"><HelpCircle /></button><button className="icon-button" onClick={() => setManageCategories(true)} aria-label="Manage categories"><Settings2 /></button><div className="menu-wrap"><button className="icon-button" onClick={() => setShowDataMenu(!showDataMenu)} aria-label="Data options"><MoreHorizontal /></button>{showDataMenu && <div className="data-menu"><button onClick={() => { excelService.download(observations, `${project.name.replace(/[^a-z0-9-_]+/gi, '_')}_observations.xlsx`); setShowDataMenu(false) }}><Download /> Export Excel copy</button><button onClick={() => { void syncExcel(); setShowDataMenu(false) }}><FileSpreadsheet /> Rebuild Excel from saved observations</button><button onClick={() => setProject(null)}><Database /> Switch analysis</button></div>}</div></div>
     </header>
-    {showShortcuts && <div className="shortcut-bar"><span><kbd>Space</kbd> Play / pause</span><span><kbd>Ctrl S</kbd> Save observation</span><span><kbd>←</kbd><kbd>→</kbd> Seek 2 sec</span><span><kbd>Shift</kbd> + arrows Seek 5 sec</span><button onClick={() => setShowShortcuts(false)}>Close</button></div>}
+    {showShortcuts && <div className="shortcut-bar"><span><kbd>Space</kbd> Play / pause</span><span><kbd>Ctrl S</kbd> Save</span><span><kbd>Ctrl ↵</kbd> Update & next</span><span><kbd>↑</kbd><kbd>↓</kbd> Review previous / next</span><span><kbd>Esc</kbd> Stop editing</span><span><kbd>←</kbd><kbd>→</kbd> Seek 2 sec</span><button onClick={() => setShowShortcuts(false)}>Close</button></div>}
     <main className="workspace">
       <VideoPlayer videoRef={videoRef} videoFile={videoFile} onVideoSelected={selectVideo} onChooseVideo={isDesktopApp() ? chooseVideo : undefined} currentTime={currentTime} duration={duration} onTimeUpdate={(time, nextDuration) => { setCurrentTime(time); if (Number.isFinite(nextDuration)) setDuration(nextDuration) }} />
       <aside className="coding-panel">
-        <ObservationForm timestamp={currentTime} categories={project.categories} codingGroups={project.codingGroups} selectedReactions={reactions} selectedGender={gender} notes={notes} saving={saving} editing={Boolean(editingId)} canSave={Boolean(videoFile)} onToggleReaction={toggleReaction} onGender={setGender} onNotes={setNotes} onSave={() => void saveObservation()} onCancelEdit={() => { setEditingId(null); setReactions([]); setGender(''); setNotes('') }} />
-        <ObservationHistory observations={observations} currentVideo={videoFile} newestFirst={newestFirst} onToggleSort={() => setNewestFirst(!newestFirst)} onSeek={(item) => { if (videoRef.current && item.videoFile === videoFile) videoRef.current.currentTime = item.timestampSeconds }} onEdit={(item) => { if (videoRef.current && item.videoFile === videoFile) videoRef.current.currentTime = item.timestampSeconds; setEditingId(item.id); setReactions(item.reaction.split(', ').filter(Boolean)); setGender(item.gender || ''); setNotes(item.notes) }} onDelete={(item) => void removeObservation(item)} />
+        <ObservationForm timestamp={currentTime} categories={project.categories} codingGroups={project.codingGroups} selectedReactions={reactions} selectedGender={gender} notes={notes} saving={saving} editing={Boolean(editingId)} editingEventId={editingIndex >= 0 ? reviewRows[editingIndex].eventId : undefined} canMovePrevious={editingIndex > 0} canMoveNext={editingIndex >= 0 && editingIndex < reviewRows.length - 1} canSave={Boolean(videoFile)} onToggleReaction={toggleReaction} onGender={setGender} onNotes={setNotes} onSave={() => void saveObservation()} onCancelEdit={cancelEditing} onMovePrevious={() => moveEditing(-1)} onMoveNext={() => moveEditing(1)} />
+        <ObservationHistory observations={observations} currentVideo={videoFile} editingId={editingId} newestFirst={newestFirst} onToggleSort={() => setNewestFirst(!newestFirst)} onEdit={beginEditing} onDelete={(item) => void removeObservation(item)} />
       </aside>
     </main>
     {toast && <div className="toast">✓ {toast}</div>}

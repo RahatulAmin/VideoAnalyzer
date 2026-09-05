@@ -1,4 +1,4 @@
-import type { ExcelImport, Observation, WorkbookTarget } from '../types'
+import type { ExcelImport, ExcelImportSource, Observation, WorkbookTarget } from '../types'
 import { parseTimestamp } from '../utils/time'
 import { isDesktopApp } from './desktop'
 
@@ -52,6 +52,31 @@ async function writeDesktopPath(path: string, observations: Observation[]) {
 
 export const excelService = {
   supported: isDesktopApp() || typeof window !== 'undefined' && 'showSaveFilePicker' in window,
+  connectedImportSupported: isDesktopApp() || typeof window !== 'undefined' && 'showOpenFilePicker' in window,
+
+  async chooseWorkbookToImport(): Promise<ExcelImportSource | undefined> {
+    if (isDesktopApp()) {
+      const [{ open }, { readFile }] = await Promise.all([
+        import('@tauri-apps/plugin-dialog'),
+        import('@tauri-apps/plugin-fs'),
+      ])
+      const path = await open({ multiple: false, filters: [{ name: 'Excel workbook', extensions: ['xlsx'] }] })
+      if (!path) return undefined
+      const bytes = await readFile(path)
+      const name = path.split(/[\\/]/).pop() ?? 'observations.xlsx'
+      return {
+        file: new File([bytes], name, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+        target: path,
+      }
+    }
+    if (typeof window === 'undefined' || !('showOpenFilePicker' in window)) return undefined
+    const [handle] = await window.showOpenFilePicker({
+      multiple: false,
+      mode: 'readwrite',
+      types: [{ description: 'Excel workbook', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }],
+    })
+    return handle ? { file: await handle.getFile(), target: handle } : undefined
+  },
 
   async chooseNewWorkbook(suggestedName: string): Promise<WorkbookTarget | undefined> {
     if (isDesktopApp()) {

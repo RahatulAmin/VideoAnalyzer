@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { ArrowRight, FilePlus2, FolderOpen, ShieldCheck, Trash2 } from 'lucide-react'
-import type { AnalysisProject, CodingGroup, ProjectTemplate } from '../types'
+import type { AnalysisProject, CodingGroup, ProjectTemplate, WorkbookTarget } from '../types'
 import { ProjectSetupModal } from './ProjectSetupModal'
 
 interface Props {
@@ -10,11 +10,13 @@ interface Props {
   onSaveTemplate: (templateId: string | undefined, name: string, groups: CodingGroup[]) => Promise<ProjectTemplate>
   onDeleteTemplate: (template: ProjectTemplate) => Promise<void>
   onOpen: (project: AnalysisProject) => void
-  onImport: (file: File) => Promise<void>
+  connectedImportSupported: boolean
+  onChooseConnectedImport: () => Promise<void>
+  onImport: (file: File, target?: WorkbookTarget) => Promise<void>
   onDelete: (project: AnalysisProject) => void
 }
 
-export function ProjectManager({ projects, templates, onNew, onSaveTemplate, onDeleteTemplate, onOpen, onImport, onDelete }: Props) {
+export function ProjectManager({ projects, templates, onNew, onSaveTemplate, onDeleteTemplate, onOpen, connectedImportSupported, onChooseConnectedImport, onImport, onDelete }: Props) {
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
   const [showSetup, setShowSetup] = useState(false)
@@ -38,7 +40,7 @@ export function ProjectManager({ projects, templates, onNew, onSaveTemplate, onD
             <div className="new-actions"><button className="button button--primary" disabled={!name.trim() || creating} onClick={() => setShowSetup(true)}>Choose setup</button></div>
           </section>
           <section className="recent-projects">
-            <div className="recent-title"><div><FolderOpen /><h2>Saved analyses</h2></div><button onClick={() => importRef.current?.click()}>Import Excel</button></div>
+            <div className="recent-title"><div><FolderOpen /><h2>Saved analyses</h2></div><button onClick={() => connectedImportSupported ? void onChooseConnectedImport() : importRef.current?.click()}>Import Excel</button></div>
             <input ref={importRef} className="sr-only" type="file" accept=".xlsx" onChange={(event) => event.target.files?.[0] && void onImport(event.target.files[0])} />
             <div className="project-list">
               {!projects.length && <div className="no-projects">No saved analyses on this browser yet.</div>}

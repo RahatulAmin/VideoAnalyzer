@@ -56,3 +56,8 @@ export interface ExcelImport {
   observations: Omit<Observation, 'id' | 'projectId'>[]
   workbookName: string
 }
+
+export interface ExcelImportSource {
+  file: File
+  target: WorkbookTarget
+}
